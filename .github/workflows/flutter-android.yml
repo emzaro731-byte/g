@@ -14,8 +14,8 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Scaffold Flutter Android platform
-        run: flutter create --platforms=android --project-name iphone_style_launcher .
+      - name: Scaffold Android platform
+        run: flutter create --platforms=android --project-name iphone_style_launcher --overwrite .
       - name: Get packages
         run: flutter pub get
       - name: Analyze
