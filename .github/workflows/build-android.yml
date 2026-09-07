@@ -12,11 +12,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Godot
+      - name: Setup Godot (standard, non-.NET)
         uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.5.1
+          use-dotnet: false
           include-templates: true
+
+      - name: Verify Godot
+        run: |
+          godot --version
+          case "$(godot --version)" in
+            *mono*) echo "ERROR: .NET/Mono Godot was installed"; exit 1 ;;
+          esac
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -29,6 +37,9 @@ jobs:
 
       - name: Install Android packages
         run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Validate project
+        run: godot --headless --path . --editor --quit
 
       - name: Export APK
         run: |
