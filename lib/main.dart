@@ -4,101 +4,76 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() => runApp(const AndroidLauncher());
+void main() => runApp(const AndroidLiquidLauncher());
 
-class AndroidLauncher extends StatelessWidget {
-  const AndroidLauncher({super.key});
+class AndroidLiquidLauncher extends StatelessWidget {
+  const AndroidLiquidLauncher({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
         debugShowCheckedModeBanner: false,
-        title: 'Android Launcher',
+        title: 'Liquid Glass Launcher',
         theme: ThemeData.dark(useMaterial3: true),
         home: const HomeScreen(),
       );
 }
 
 class LauncherApp {
-  final String name;
-  final String packageName;
-  final String className;
-  final String iconBase64;
+  final String name, packageName, className, iconBase64;
   const LauncherApp({required this.name, required this.packageName, required this.className, required this.iconBase64});
-
-  factory LauncherApp.fromMap(Map<dynamic, dynamic> map) => LauncherApp(
-        name: map['name'] as String? ?? 'App',
-        packageName: map['packageName'] as String? ?? '',
-        className: map['className'] as String? ?? '',
-        iconBase64: map['icon'] as String? ?? '',
+  factory LauncherApp.fromMap(Map<dynamic, dynamic> m) => LauncherApp(
+        name: m['name'] as String? ?? 'App',
+        packageName: m['packageName'] as String? ?? '',
+        className: m['className'] as String? ?? '',
+        iconBase64: m['icon'] as String? ?? '',
       );
 }
 
 class LauncherBridge {
   static const channel = MethodChannel('iphone_launcher/apps');
-
-  static Future<List<LauncherApp>> getApps() async {
+  static Future<List<LauncherApp>> apps() async {
     try {
       final raw = await channel.invokeMethod<List<dynamic>>('getInstalledApps');
       return (raw ?? []).map((e) => LauncherApp.fromMap(Map<dynamic, dynamic>.from(e as Map))).toList();
-    } catch (_) {
-      return [];
-    }
+    } catch (_) { return []; }
   }
-
   static Future<bool> launch(LauncherApp app) async {
-    try {
-      return await channel.invokeMethod<bool>('launchApp', {'packageName': app.packageName, 'className': app.className}) ?? false;
-    } catch (_) {
-      return false;
-    }
+    try { return await channel.invokeMethod<bool>('launchApp', {'packageName': app.packageName, 'className': app.className}) ?? false; } catch (_) { return false; }
   }
-
   static Future<bool> isDefaultHome() async => await channel.invokeMethod<bool>('isDefaultHome') ?? false;
   static Future<bool> requestDefaultHome() async => await channel.invokeMethod<bool>('requestDefaultHome') ?? false;
 }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-  @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  @override State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  List<LauncherApp> apps = [];
-  List<LauncherApp> homeApps = [];
-  bool drawerOpen = false;
-  bool searchOpen = false;
-  bool controlOpen = false;
-  bool defaultHome = false;
-  String search = '';
-  bool loading = true;
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  final List<LauncherApp> homeApps = [];
+  List<LauncherApp> allApps = [];
+  String query = '';
+  bool drawer = false, search = false, settings = false, defaultHome = false, loading = true;
+  late final AnimationController liquid;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _refresh();
+    liquid = AnimationController(vsync: this, duration: const Duration(seconds: 9))..repeat();
+    refreshApps();
   }
+  @override void dispose() { WidgetsBinding.instance.removeObserver(this); liquid.dispose(); super.dispose(); }
+  @override void didChangeAppLifecycleState(AppLifecycleState s) { if (s == AppLifecycleState.resumed) refreshApps(); }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refresh();
-  }
-
-  Future<void> _refresh() async {
-    final result = await LauncherBridge.getApps();
+  Future<void> refreshApps() async {
+    final result = await LauncherBridge.apps();
     if (!mounted) return;
-    final installedPackages = result.map((e) => e.packageName).toSet();
+    final valid = result.map((e) => e.packageName).toSet();
     setState(() {
-      apps = result;
-      homeApps = homeApps.where((e) => installedPackages.contains(e.packageName)).toList();
+      allApps = result;
+      homeApps.removeWhere((e) => !valid.contains(e.packageName));
       for (final app in result) {
-        if (homeApps.length >= 16) break;
+        if (homeApps.length >= 20) break;
         if (!homeApps.any((e) => e.packageName == app.packageName)) homeApps.add(app);
       }
       loading = false;
@@ -107,86 +82,155 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
-  Future<void> _open(LauncherApp app) async {
-    final ok = await LauncherBridge.launch(app);
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open ${app.name}')));
+  Future<void> openApp(LauncherApp app) async {
+    if (!await LauncherBridge.launch(app) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unable to open ${app.name}')));
     }
   }
 
-  Future<void> _longPress(LauncherApp app) async {
+  Widget appIcon(LauncherApp app, {double size = 66}) {
+    Widget image;
+    try {
+      image = app.iconBase64.isEmpty
+          ? const Icon(CupertinoIcons.app_fill, color: Colors.white, size: 30)
+          : Image.memory(base64Decode(app.iconBase64), width: size, height: size, fit: BoxFit.cover);
+    } catch (_) { image = const Icon(CupertinoIcons.app_fill, color: Colors.white, size: 30); }
+    return Hero(tag: app.packageName, child: ClipRRect(borderRadius: BorderRadius.circular(size * .23), child: image));
+  }
+
+  Future<void> appMenu(LauncherApp app) async {
     final action = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: const Color(0xff11182e),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
-      builder: (_) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        ListTile(leading: _icon(app, 48), title: Text(app.name, style: const TextStyle(fontWeight: FontWeight.w700))),
-        ListTile(leading: const Icon(CupertinoIcons.arrow_left), title: const Text('Move left'), onTap: () => Navigator.pop(context, 'left')),
-        ListTile(leading: const Icon(CupertinoIcons.arrow_right), title: const Text('Move right'), onTap: () => Navigator.pop(context, 'right')),
-        ListTile(leading: const Icon(CupertinoIcons.minus_circle), title: const Text('Remove from Home'), onTap: () => Navigator.pop(context, 'remove')),
-        ListTile(leading: const Icon(CupertinoIcons.info_circle), title: const Text('App details'), onTap: () => Navigator.pop(context, 'details')),
-      ])),
+      backgroundColor: Colors.transparent,
+      builder: (_) => LiquidGlass(
+        radius: 30,
+        margin: const EdgeInsets.all(10),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(leading: appIcon(app, size: 48), title: Text(app.name, style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text(app.packageName)),
+          ListTile(leading: const Icon(CupertinoIcons.arrow_left), title: const Text('Move left'), onTap: () => Navigator.pop(context, 'left')),
+          ListTile(leading: const Icon(CupertinoIcons.arrow_right), title: const Text('Move right'), onTap: () => Navigator.pop(context, 'right')),
+          ListTile(leading: const Icon(CupertinoIcons.minus_circle), title: const Text('Remove from Home'), onTap: () => Navigator.pop(context, 'remove')),
+        ])),
+      ),
     );
     if (!mounted || action == null) return;
-    final index = homeApps.indexWhere((e) => e.packageName == app.packageName);
-    if (index < 0) return;
+    final i = homeApps.indexWhere((e) => e.packageName == app.packageName);
+    if (i < 0) return;
     setState(() {
-      if (action == 'remove') homeApps.removeAt(index);
-      if (action == 'left' && index > 0) {
-        final item = homeApps.removeAt(index);
-        homeApps.insert(index - 1, item);
-      }
-      if (action == 'right' && index < homeApps.length - 1) {
-        final item = homeApps.removeAt(index);
-        homeApps.insert(index + 1, item);
-      }
+      if (action == 'remove') homeApps.removeAt(i);
+      if (action == 'left' && i > 0) { final x = homeApps.removeAt(i); homeApps.insert(i - 1, x); }
+      if (action == 'right' && i < homeApps.length - 1) { final x = homeApps.removeAt(i); homeApps.insert(i + 1, x); }
     });
-    if (action == 'details') _showDetails(app);
-  }
-
-  void _showDetails(LauncherApp app) => showDialog<void>(context: context, builder: (_) => AlertDialog(title: Text(app.name), content: Text(app.packageName), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))]));
-
-  Widget _icon(LauncherApp app, double size) {
-    if (app.iconBase64.isNotEmpty) {
-      try {
-        return ClipRRect(borderRadius: BorderRadius.circular(size * .22), child: Image.memory(base64Decode(app.iconBase64), width: size, height: size, fit: BoxFit.cover));
-      } catch (_) {}
-    }
-    return Container(width: size, height: size, decoration: BoxDecoration(color: Colors.white12, borderRadius: BorderRadius.circular(size * .22)), child: const Icon(CupertinoIcons.app));
   }
 
   @override
   Widget build(BuildContext context) {
-    final filtered = apps.where((a) => a.name.toLowerCase().contains(search.toLowerCase())).toList();
-    return Scaffold(
-      body: Stack(children: [
-        Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xff182b58), Color(0xff050817)]))),
-        SafeArea(child: Column(children: [
-          Padding(padding: const EdgeInsets.fromLTRB(18, 8, 18, 8), child: Row(children: [const Text('9:41', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)), const Spacer(), IconButton(onPressed: () => setState(() => controlOpen = true), icon: const Icon(CupertinoIcons.slider_horizontal_3)), const Icon(CupertinoIcons.wifi, size: 17), const SizedBox(width: 8), const Icon(CupertinoIcons.battery_100, size: 21)])),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: Row(children: [Expanded(child: Text(defaultHome ? 'Default Home' : 'Android Launcher', style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w700))), IconButton(onPressed: _refresh, icon: const Icon(CupertinoIcons.refresh))])),
-          Padding(padding: const EdgeInsets.fromLTRB(18, 6, 18, 14), child: GestureDetector(onTap: () => setState(() => searchOpen = true), child: glass(const Row(children: [Icon(CupertinoIcons.search, color: Colors.white60), SizedBox(width: 10), Text('Search installed apps', style: TextStyle(color: Colors.white60, fontSize: 16))])))),
-          if (!defaultHome) Padding(padding: const EdgeInsets.fromLTRB(18, 0, 18, 12), child: OutlinedButton.icon(onPressed: () async { await LauncherBridge.requestDefaultHome(); await _refresh(); }, icon: const Icon(CupertinoIcons.house_fill), label: const Text('Set as default Home'))),
-          Expanded(child: loading ? const Center(child: CircularProgressIndicator()) : homeApps.isEmpty ? const Center(child: Text('Long-press apps in the drawer to add them to Home.')) : _homeGrid()),
-          Padding(padding: const EdgeInsets.fromLTRB(18, 4, 18, 10), child: GestureDetector(onTap: () => setState(() => drawerOpen = true), onVerticalDragEnd: (_) => setState(() => drawerOpen = true), child: glass(const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(CupertinoIcons.chevron_up), SizedBox(width: 8), Text('App Drawer', style: TextStyle(fontWeight: FontWeight.w600))]))))),
-          Container(width: 120, height: 5, margin: const EdgeInsets.only(bottom: 8), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8))),
-        ])),
-        if (drawerOpen) _drawer(filtered),
-        if (searchOpen) _search(filtered),
-        if (controlOpen) _controls(),
-      ]),
+    final filtered = allApps.where((a) => a.name.toLowerCase().contains(query.toLowerCase())).toList();
+    return AnimatedBuilder(
+      animation: liquid,
+      builder: (_, __) => Scaffold(
+        backgroundColor: const Color(0xff030611),
+        body: Stack(children: [
+          LiquidBackground(progress: liquid.value),
+          SafeArea(child: Column(children: [
+            Padding(padding: const EdgeInsets.fromLTRB(18, 8, 18, 2), child: Row(children: [
+              Text(_time(), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)), const Spacer(),
+              const Icon(CupertinoIcons.wifi, size: 16), const SizedBox(width: 9), const Icon(CupertinoIcons.battery_100, size: 21),
+            ])),
+            Padding(padding: const EdgeInsets.fromLTRB(18, 14, 18, 10), child: Row(children: [
+              Expanded(child: Text(defaultHome ? 'Home' : 'Launcher', style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -.8))),
+              IconButton(onPressed: refreshApps, icon: const Icon(CupertinoIcons.refresh)),
+              IconButton(onPressed: () => setState(() => settings = true), icon: const Icon(CupertinoIcons.slider_horizontal_3)),
+            ])),
+            Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: GestureDetector(onTap: () => setState(() => search = true), child: const LiquidGlass(child: Row(children: [Icon(CupertinoIcons.search, color: Colors.white70), SizedBox(width: 10), Text('Search apps', style: TextStyle(color: Colors.white70, fontSize: 16))])))),
+            if (!defaultHome) Padding(padding: const EdgeInsets.fromLTRB(18, 10, 18, 2), child: LiquidGlassButton(icon: CupertinoIcons.house_fill, label: 'Set as default Home', onTap: () async { await LauncherBridge.requestDefaultHome(); await refreshApps(); })),
+            const SizedBox(height: 10),
+            Expanded(child: loading ? const Center(child: CircularProgressIndicator()) : _homeGrid()),
+            Padding(padding: const EdgeInsets.fromLTRB(18, 4, 18, 10), child: GestureDetector(onTap: () => setState(() => drawer = true), onVerticalDragEnd: (_) => setState(() => drawer = true), child: const LiquidGlass(child: SizedBox(height: 58, child: Center(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(CupertinoIcons.chevron_up), SizedBox(width: 8), Text('App Drawer', style: TextStyle(fontWeight: FontWeight.w700))]))))),
+            Container(width: 118, height: 5, margin: const EdgeInsets.only(bottom: 7), decoration: BoxDecoration(color: Colors.white70, borderRadius: BorderRadius.circular(8))),
+          ])),
+          if (drawer) _drawer(filtered),
+          if (search) _search(filtered),
+          if (settings) _settings(),
+        ]),
+      ),
     );
   }
 
-  Widget _homeGrid() => GridView.builder(padding: const EdgeInsets.fromLTRB(18, 4, 18, 8), itemCount: homeApps.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 18, crossAxisSpacing: 10, childAspectRatio: .78), itemBuilder: (_, i) {
-        final app = homeApps[i];
-        return GestureDetector(onTap: () => _open(app), onLongPress: () => _longPress(app), child: Column(children: [_icon(app, 62), const SizedBox(height: 7), Text(app.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5))]));
-      });
+  Widget _homeGrid() => GridView.builder(
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 10), itemCount: homeApps.length,
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 18, crossAxisSpacing: 9, childAspectRatio: .76),
+        itemBuilder: (_, i) { final app = homeApps[i]; return GestureDetector(onTap: () => openApp(app), onLongPress: () => appMenu(app), child: Column(children: [
+          appIcon(app), const SizedBox(height: 7), Text(app.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500)),
+        ])); },
+      );
 
-  Widget _drawer(List<LauncherApp> list) => Positioned.fill(child: Container(color: const Color(0xff060a18).withOpacity(.98), child: SafeArea(child: Column(children: [Padding(padding: const EdgeInsets.fromLTRB(18, 8, 18, 12), child: Row(children: [const Text('All apps', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w700)), const Spacer(), IconButton(onPressed: () => setState(() => drawerOpen = false), icon: const Icon(CupertinoIcons.xmark))])), Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: TextField(onChanged: (v) => setState(() => search = v), decoration: InputDecoration(prefixIcon: const Icon(CupertinoIcons.search), hintText: 'Search apps', filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(18), borderSide: BorderSide.none)))), const SizedBox(height: 15), Expanded(child: GridView.builder(padding: const EdgeInsets.all(18), itemCount: list.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 20, crossAxisSpacing: 10, childAspectRatio: .76), itemBuilder: (_, i) { final app = list[i]; return GestureDetector(onTap: () => _open(app), onLongPress: () async { if (!homeApps.any((e) => e.packageName == app.packageName)) setState(() => homeApps.add(app)); }, child: Column(children: [_icon(app, 62), const SizedBox(height: 7), Text(app.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5))])); }))]))));
+  Widget _drawer(List<LauncherApp> list) => Positioned.fill(child: LiquidGlass(
+        radius: 0, color: const Color(0xff071027).withOpacity(.78), sigma: 28,
+        child: SafeArea(child: Column(children: [
+          Padding(padding: const EdgeInsets.fromLTRB(18, 10, 18, 12), child: Row(children: [const Text('All apps', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800)), const Spacer(), IconButton(onPressed: () => setState(() => drawer = false), icon: const Icon(CupertinoIcons.xmark))])),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: LiquidGlass(child: TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(CupertinoIcons.search), hintText: 'Search installed apps', border: InputBorder.none)))),
+          const SizedBox(height: 12),
+          Expanded(child: GridView.builder(padding: const EdgeInsets.all(18), itemCount: list.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 20, crossAxisSpacing: 10, childAspectRatio: .76), itemBuilder: (_, i) { final app = list[i]; return GestureDetector(
+            onTap: () => openApp(app), onLongPress: () { if (!homeApps.any((x) => x.packageName == app.packageName)) setState(() => homeApps.add(app)); },
+            child: Column(children: [appIcon(app), const SizedBox(height: 7), Text(app.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12))]),
+          ); }))
+        ])),
+      ));
 
-  Widget _search(List<LauncherApp> list) => Positioned.fill(child: Container(color: const Color(0xff060a18).withOpacity(.99), child: SafeArea(child: Column(children: [Padding(padding: const EdgeInsets.all(18), child: Row(children: [const Text('Search', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w700)), const Spacer(), TextButton(onPressed: () => setState(() => searchOpen = false), child: const Text('Done'))])), Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: TextField(autofocus: true, onChanged: (v) => setState(() => search = v), decoration: InputDecoration(prefixIcon: const Icon(CupertinoIcons.search), hintText: 'Search installed apps', filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(18), borderSide: BorderSide.none)))), Expanded(child: ListView(children: list.map((app) => ListTile(leading: _icon(app, 46), title: Text(app.name), subtitle: Text(app.packageName, maxLines: 1, overflow: TextOverflow.ellipsis), onTap: () { setState(() => searchOpen = false); _open(app); })).toList()))]))));
+  Widget _search(List<LauncherApp> list) => Positioned.fill(child: LiquidGlass(radius: 0, color: const Color(0xff071027).withOpacity(.86), sigma: 30, child: SafeArea(child: Column(children: [
+    Padding(padding: const EdgeInsets.all(18), child: Row(children: [const Text('Search', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800)), const Spacer(), TextButton(onPressed: () => setState(() => search = false), child: const Text('Done'))])),
+    Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: LiquidGlass(child: TextField(autofocus: true, onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(CupertinoIcons.search), hintText: 'Search installed apps', border: InputBorder.none)))),
+    Expanded(child: ListView(children: list.map((app) => ListTile(leading: appIcon(app, size: 48), title: Text(app.name), subtitle: Text(app.packageName), onTap: () { setState(() => search = false); openApp(app); })).toList()))
+  ]))));
 
-  Widget _controls() => Positioned.fill(child: Container(color: Colors.black54, alignment: Alignment.topCenter, padding: const EdgeInsets.only(top: 55), child: Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: const Color(0xff11182e), borderRadius: BorderRadius.circular(30)), child: Column(mainAxisSize: MainAxisSize.min, children: [Row(children: [const Text('Launcher settings', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700)), const Spacer(), IconButton(onPressed: () => setState(() => controlOpen = false), icon: const Icon(CupertinoIcons.xmark))]), ListTile(leading: const Icon(CupertinoIcons.house_fill), title: Text(defaultHome ? 'Default Home is enabled' : 'Set as default Home'), subtitle: const Text('Choose this launcher as your Android Home app'), onTap: () async { await LauncherBridge.requestDefaultHome(); setState(() => controlOpen = false); await _refresh(); }), ListTile(leading: const Icon(CupertinoIcons.refresh), title: const Text('Refresh installed apps'), onTap: () { setState(() => controlOpen = false); _refresh(); }), const Divider(), const Text('Long-press a Home icon to move it left/right, remove it, or view its package details.')]))));
+  Widget _settings() => Positioned.fill(child: LiquidGlass(radius: 0, color: const Color(0xff071027).withOpacity(.84), sigma: 28, child: SafeArea(child: Column(children: [
+    Padding(padding: const EdgeInsets.fromLTRB(18, 10, 18, 20), child: Row(children: [const Text('Launcher', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800)), const Spacer(), IconButton(onPressed: () => setState(() => settings = false), icon: const Icon(CupertinoIcons.xmark))])),
+    LiquidGlass(margin: const EdgeInsets.symmetric(horizontal: 18), child: Column(children: [
+      ListTile(leading: const Icon(CupertinoIcons.house_fill), title: Text(defaultHome ? 'Default Home enabled' : 'Set as default Home'), subtitle: const Text('Use this launcher when you press Home'), onTap: () async { await LauncherBridge.requestDefaultHome(); await refreshApps(); setState(() => settings = false); }),
+      const Divider(height: 1),
+      ListTile(leading: const Icon(CupertinoIcons.refresh), title: const Text('Refresh installed apps'), onTap: () { setState(() => settings = false); refreshApps(); }),
+    ])),
+    const Spacer(), const Padding(padding: EdgeInsets.all(24), child: Text('Liquid Glass • Dynamic Android Launcher', style: TextStyle(color: Colors.white54))),
+  ]))));
 
-  Widget glass(Widget child) => ClipRRect(borderRadius: BorderRadius.circular(22), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18), child: Container(padding: const EdgeInsets.symmetric(horizontal: 18), decoration: BoxDecoration(color: Colors.white.withOpacity(.12), border: Border.all(color: Colors.white.withOpacity(.08))), child: child)));
+  String _time() { final n = DateTime.now(); final h = n.hour % 12 == 0 ? 12 : n.hour % 12; return '$h:${n.minute.toString().padLeft(2, '0')}'; }
+}
+
+class LiquidBackground extends StatelessWidget {
+  final double progress;
+  const LiquidBackground({super.key, required this.progress});
+  @override Widget build(BuildContext context) => CustomPaint(painter: _LiquidPainter(progress), child: const SizedBox.expand());
+}
+
+class _LiquidPainter extends CustomPainter {
+  final double p;
+  _LiquidPainter(this.p);
+  @override void paint(Canvas c, Size s) {
+    c.drawRect(Offset.zero & s, Paint()..shader = const LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xff152d63), Color(0xff050817), Color(0xff090d24)]).createShader(Offset.zero & s));
+    final blobs = [
+      (Offset(s.width * (.18 + .10 * p), s.height * .20), s.width * .34, const Color(0xff4f8cff)),
+      (Offset(s.width * (.86 - .12 * p), s.height * .48), s.width * .40, const Color(0xff9b5cff)),
+      (Offset(s.width * (.35 + .16 * p), s.height * .84), s.width * .32, const Color(0xff00c6a7)),
+    ];
+    for (final b in blobs) c.drawCircle(b.$1, b.$2, Paint()..color = b.$3.withOpacity(.18)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 55));
+  }
+  @override bool shouldRepaint(covariant _LiquidPainter old) => old.p != p;
+}
+
+class LiquidGlass extends StatelessWidget {
+  final Widget child; final double radius, sigma; final EdgeInsetsGeometry? margin, padding; final Color? color;
+  const LiquidGlass({super.key, required this.child, this.radius = 24, this.sigma = 20, this.margin, this.padding, this.color});
+  @override Widget build(BuildContext context) => Container(margin: margin, child: ClipRRect(borderRadius: BorderRadius.circular(radius), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma), child: Container(
+    padding: padding ?? const EdgeInsets.symmetric(horizontal: 16),
+    decoration: BoxDecoration(color: color ?? Colors.white.withOpacity(.10), borderRadius: BorderRadius.circular(radius), border: Border.all(color: Colors.white.withOpacity(.20), width: 1), boxShadow: [BoxShadow(color: Colors.black.withOpacity(.20), blurRadius: 24, offset: const Offset(0, 10))], gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.white.withOpacity(.18), Colors.white.withOpacity(.05)])),
+    child: child,
+  ))));
+}
+
+class LiquidGlassButton extends StatelessWidget {
+  final IconData icon; final String label; final VoidCallback onTap;
+  const LiquidGlassButton({super.key, required this.icon, required this.label, required this.onTap});
+  @override Widget build(BuildContext context) => GestureDetector(onTap: onTap, child: LiquidGlass(child: SizedBox(height: 48, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(icon, size: 19), const SizedBox(width: 9), Text(label, style: const TextStyle(fontWeight: FontWeight.w700))]))));
 }
